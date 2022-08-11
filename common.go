@@ -126,6 +126,7 @@ func (w *Worker) Conn2Chan() {
 			break
 		}
 	}
+	commonLogger.Printf("local connection closed,so try to close worker %s", w.id)
 	w.Destroy(true)
 }
 
@@ -140,6 +141,7 @@ func (w *Worker) Chan2Conn() {
 			LogBytes(chan2ConnLogger, byteSlice)
 		}
 	}
+	commonLogger.Printf("remote chan closed,so try to close worker %s", w.id)
 	//remote close
 	w.Destroy(false)
 }
@@ -206,6 +208,7 @@ type DuplexChain struct {
 type PortBinding struct {
 	net.Conn
 	forwardDataChain  *DataChain
+	notify            chan struct{}
 	CreateChannelFunc func(id string)
 }
 
@@ -213,6 +216,7 @@ func NewPortBinding(conn net.Conn, dc *DataChain) *PortBinding {
 	return &PortBinding{
 		Conn:             conn,
 		forwardDataChain: dc,
+		notify:           make(chan struct{}, 0),
 		CreateChannelFunc: func(id string) {
 
 		},
@@ -254,20 +258,35 @@ func (pb *PortBinding) Conn2Chan() {
 		}
 		buf.Write(remain)
 	}
+	pbConn2ChanLogger.Print("remote closed connection, close all chan")
+	//simply close all chan
+	for _, c := range pb.forwardDataChain.Chan2Conn {
+		close(c)
+	}
+	pb.notify <- struct{}{}
+
 }
 
 // Chan2Conn read data from shared channel, then write it to connection
 func (pb *PortBinding) Chan2Conn() {
-	for dataPackage := range pb.forwardDataChain.Conn2Chan {
-		id, byteSlice := dataPackage.Id, dataPackage.Data
-		pbChan2ConnLogger.Println("selected data from chan success")
-		newBytes := Assemble(id, byteSlice)
-		size, err := pb.Write(newBytes)
-		if err != nil {
-			pbChan2ConnLogger.Printf("write to conn fail %d: %v", size, err)
-			break
-		} else {
-			LogBytes(pbChan2ConnLogger, byteSlice)
+loop:
+	for {
+		select {
+		case dataPackage := <-pb.forwardDataChain.Conn2Chan:
+			id, byteSlice := dataPackage.Id, dataPackage.Data
+			pbChan2ConnLogger.Println("selected data from chan success")
+			newBytes := Assemble(id, byteSlice)
+			//pb.SetWriteDeadline(time.Now().Add(3 * time.Second))
+			size, err := pb.Write(newBytes)
+			if err != nil {
+				pbChan2ConnLogger.Printf("write to conn fail %d: %v", size, err)
+				break loop
+			} else {
+				LogBytes(pbChan2ConnLogger, byteSlice)
+			}
+		case <-pb.notify:
+			pbChan2ConnLogger.Printf("get notification from Conn2Chan, close goroutine")
+			break loop
 		}
 	}
 }

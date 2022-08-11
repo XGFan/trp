@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 	"trp"
 )
 
@@ -29,6 +30,7 @@ func main() {
 		clientDialer, err := net.Dial("tcp", serverAddr)
 		if err != nil {
 			clientLogger.Printf("dail to server fail: %v", err)
+			time.Sleep(time.Second * 5)
 			continue
 		}
 		clientLogger.Printf("connected to server")
