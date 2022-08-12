@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"sync"
 	"time"
 	"trp"
 )
@@ -36,17 +35,8 @@ func main() {
 		clientLogger.Printf("connected to server")
 		trpBinding := trp.NewPortBinding(clientDialer, dataChain)
 		trpBinding.CreateChannelFunc = supervisor.AllocateWorker
-		wg := sync.WaitGroup{}
-		wg.Add(2)
-		go func() {
-			trpBinding.Conn2Chan()
-			wg.Done()
-		}()
-		go func() {
-			trpBinding.Chan2Conn()
-			wg.Done()
-		}()
-		wg.Wait()
+		go trpBinding.Conn2Chan()
+		trpBinding.Chan2Conn()
 	}
 }
 
