@@ -23,8 +23,7 @@ func main() {
 	flag.Parse()
 	clientLogger.Printf("connect to %s", serverAddr)
 	clientLogger.Printf("requests from remote will forward to %s", localAddr)
-	dataChain := trp.NewDataChain()
-	supervisor := NewSupervisor(localAddr, dataChain)
+	supervisor := trp.NewClientSupervisor(localAddr)
 	for {
 		clientDialer, err := net.Dial("tcp", serverAddr)
 		if err != nil {
@@ -33,35 +32,8 @@ func main() {
 			continue
 		}
 		clientLogger.Printf("connected to server")
-		trpBinding := trp.NewPortBinding(clientDialer, dataChain)
-		trpBinding.CreateChannelFunc = supervisor.AllocateWorker
+		trpBinding := trp.NewPortBinding(clientDialer, supervisor)
 		go trpBinding.Conn2Chan()
 		trpBinding.Chan2Conn()
 	}
-}
-
-type Supervisor struct {
-	address string
-	wg      *trp.DataChain
-	workers map[string]*trp.Worker
-}
-
-func NewSupervisor(address string, wg *trp.DataChain) *Supervisor {
-	return &Supervisor{
-		address: address,
-		wg:      wg,
-		workers: make(map[string]*trp.Worker, 0),
-	}
-}
-
-func (s Supervisor) AllocateWorker(id string) {
-	worker, exist := s.workers[id]
-	if exist {
-		return
-	}
-	conn, _ := net.Dial("tcp", s.address)
-	worker = s.wg.CreateWorker(id, conn)
-	s.workers[id] = worker
-	go worker.Chan2Conn()
-	go worker.Conn2Chan()
 }

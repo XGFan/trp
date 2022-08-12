@@ -22,12 +22,12 @@ func main() {
 	flag.Parse()
 	serverLogger.Printf("listen on %s", serverAddr)
 	serverLogger.Printf("requests to %s will forward to client", localAddr)
-	dataChain := trp.NewDataChain()
-	go ListenLocal(dataChain)
-	ListenClient(dataChain)
+	supervisor := trp.NewServerSupervisor()
+	go ListenLocal(supervisor)
+	ListenClient(supervisor)
 }
 
-func ListenClient(dataChain *trp.DataChain) {
+func ListenClient(sv *trp.Supervisor) {
 	clientListener, _ := net.Listen("tcp", serverAddr)
 	for {
 		conn, err := clientListener.Accept()
@@ -36,17 +36,17 @@ func ListenClient(dataChain *trp.DataChain) {
 			continue
 		}
 		serverLogger.Printf("client connected")
-		trpBinding := trp.NewPortBinding(conn, dataChain)
+		trpBinding := trp.NewPortBinding(conn, sv)
 		go trpBinding.Conn2Chan()
 		go trpBinding.Chan2Conn()
 	}
 }
 
-func ListenLocal(dataChain *trp.DataChain) {
+func ListenLocal(sv *trp.Supervisor) {
 	forwardListener, _ := net.Listen("tcp", localAddr)
 	for {
 		conn, _ := forwardListener.Accept()
-		worker := dataChain.NewWorker(conn)
+		worker := sv.AllocateWorkerByConn(conn)
 		go worker.Chan2Conn()
 		go worker.Conn2Chan()
 	}
