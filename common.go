@@ -295,7 +295,7 @@ func (s *Supervisor) Destroy() {
 		value.(*Worker).Destroy(false)
 		return true
 	})
-	if s.connFunc != nil {
+	if s.CloseFunc != nil {
 		s.CloseFunc()
 	}
 }
