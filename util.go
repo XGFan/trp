@@ -17,6 +17,16 @@ func BytesToInt64(bytes []byte) int64 {
 	return int64(binary.LittleEndian.Uint64(bytes[0:8]))
 }
 
+func Int16ToBytes(v int) []byte {
+	b := make([]byte, 2)
+	binary.LittleEndian.PutUint16(b, uint16(v))
+	return b
+}
+
+func BytesToInt16(bytes []byte) int {
+	return int(binary.LittleEndian.Uint16(bytes[0:2]))
+}
+
 type TTLCache struct {
 	TTL       time.Duration
 	storage   map[string]time.Time

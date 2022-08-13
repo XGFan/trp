@@ -42,12 +42,34 @@ func LogBytes(logger *log.Logger, bytes []byte) {
 
 type FrameType int
 
-func Assemble(id string, byteSlice []byte) []byte {
-	newBytes := make([]byte, 32+len(byteSlice))
-	copy(newBytes, id)
-	copy(newBytes[24:32], Int64ToBytes(int64(len(newBytes))))
-	copy(newBytes[32:], byteSlice)
-	return newBytes
+const (
+	DATA FrameType = iota
+	CLOSE_CONNECTION
+	BIND
+)
+
+func Assemble(frame *Frame) []byte {
+	switch frame.Type {
+	case DATA:
+		newBytes := make([]byte, 32+len(frame.Data))
+		copy(newBytes, frame.Id)
+		newBytes[17] = 0x0
+		copy(newBytes[18:26], Int64ToBytes(int64(len(newBytes))))
+		copy(newBytes[32:], frame.Data)
+		return newBytes
+	case CLOSE_CONNECTION:
+		newBytes := make([]byte, 32)
+		copy(newBytes, frame.Id)
+		newBytes[17] = 0x1
+		return newBytes
+	case BIND:
+		newBytes := make([]byte, 32)
+		copy(newBytes, frame.Id)
+		newBytes[17] = 0x2
+		copy(newBytes[18:20], frame.Data[:2])
+		return newBytes
+	}
+	return nil
 }
 
 func ParseAll(buf []byte) ([]Frame, []byte) {
@@ -62,19 +84,38 @@ func Parse(buf []byte, frames *[]Frame) []byte {
 		return buf
 	}
 	id := string(buf[:16])
-	totalLen := BytesToInt64(buf[24:32])
-	if totalLen > int64(len(buf)) {
-		return buf
+	switch buf[17] {
+	case 0x0:
+		totalLen := BytesToInt64(buf[18:26])
+		if totalLen > int64(len(buf)) {
+			return buf
+		}
+		*frames = append(*frames, Frame{
+			Id:   id,
+			Type: DATA,
+			Data: buf[32:totalLen],
+		})
+		return Parse(buf[totalLen:], frames)
+	case 0x1:
+		*frames = append(*frames, Frame{
+			Id:   id,
+			Type: CLOSE_CONNECTION,
+		})
+		return Parse(buf[32:], frames)
+	case 0x2:
+		*frames = append(*frames, Frame{
+			Id:   id,
+			Type: BIND,
+			Data: buf[18:20],
+		})
+		return Parse(buf[32:], frames)
 	}
-	*frames = append(*frames, Frame{
-		Id:   id,
-		Data: buf[32:totalLen],
-	})
-	return Parse(buf[totalLen:], frames)
+	return nil
 }
 
 type Frame struct {
 	Id   string
+	Type FrameType
 	Data []byte
 }
 
@@ -93,7 +134,7 @@ func (w *Worker) Destroy(propagate bool) {
 		if propagate {
 			//propagate: local connection closed, should notify remote to close same id worker
 			commonLogger.Printf("[%s] local Conn closed, destroy and propagate", w.Id)
-			w.Chain.Conn2Chan <- DataPackage{Id: w.Id}
+			w.Chain.Conn2Chan <- Frame{Id: w.Id}
 			defer func() {
 				//remove worker from workers
 				//and receive all msg, discard it
@@ -125,7 +166,7 @@ func (w *Worker) Conn2Chan() {
 		readLen, err := w.Conn.Read(byteSlice)
 		if err == nil {
 			byteSlice = byteSlice[:readLen]
-			w.Chain.Conn2Chan <- DataPackage{
+			w.Chain.Conn2Chan <- Frame{
 				Id:   w.Id,
 				Data: byteSlice,
 			}
@@ -154,14 +195,9 @@ func (w *Worker) Chan2Conn() {
 	w.Destroy(false)
 }
 
-type DataPackage struct {
-	Id   string
-	Data []byte
-}
-
 type DuplexChain struct {
-	Chan2Conn chan []byte        //dedicated,read
-	Conn2Chan chan<- DataPackage //shared,write
+	Chan2Conn chan []byte  //dedicated,read
+	Conn2Chan chan<- Frame //shared,write
 }
 
 type PortBinding struct {
@@ -195,7 +231,7 @@ func (pb *PortBinding) Conn2Chan() {
 		buf.Reset()
 		frames, remain := ParseAll(newBytes)
 		for _, frame := range frames {
-			pb.forwarder.WriteToWorker(frame.Id, frame.Data)
+			pb.forwarder.WriteToWorker(&frame)
 		}
 		buf.Write(remain)
 	}
@@ -209,14 +245,14 @@ func (pb *PortBinding) Chan2Conn() {
 loop:
 	for {
 		select {
-		case dataPackage := <-pb.forwarder.ReadFromWorker():
-			newBytes := Assemble(dataPackage.Id, dataPackage.Data)
+		case frame := <-pb.forwarder.ReadFromWorker():
+			newBytes := Assemble(&frame)
 			size, err := pb.Write(newBytes)
 			if err != nil {
 				pbChan2ConnLogger.Printf("write to Conn fail %d: %v", size, err)
 				break loop
 			} else {
-				LogBytes(pbChan2ConnLogger, dataPackage.Data)
+				LogBytes(pbChan2ConnLogger, frame.Data)
 			}
 		case <-pb.notify:
 			pbChan2ConnLogger.Printf("get notification from Conn2Chan, close goroutine")
@@ -230,7 +266,7 @@ type Supervisor struct {
 	ttlCache   *TTLCache
 	autoCreate bool
 	address    string
-	Conn2Chan  chan DataPackage
+	Conn2Chan  chan Frame
 	workers    sync.Map
 	CloseFunc  func()
 }
@@ -238,7 +274,7 @@ type Supervisor struct {
 func NewServerSupervisor() *Supervisor {
 	return &Supervisor{
 		ttlCache:  NewTTLCache(time.Second * 10),
-		Conn2Chan: make(chan DataPackage, 0),
+		Conn2Chan: make(chan Frame, 0),
 		workers:   sync.Map{},
 	}
 }
@@ -248,7 +284,7 @@ func NewClientSupervisor(f func() net.Conn) *Supervisor {
 		connFunc:   f,
 		ttlCache:   NewTTLCache(time.Second * 10),
 		autoCreate: true,
-		Conn2Chan:  make(chan DataPackage, 0),
+		Conn2Chan:  make(chan Frame, 0),
 		workers:    sync.Map{},
 	}
 }
@@ -305,34 +341,48 @@ func (s *Supervisor) CreateWorker(id string, conn net.Conn) *Worker {
 	return worker
 }
 
-func (s *Supervisor) ReadFromWorker() chan DataPackage {
+func (s *Supervisor) ReadFromWorker() chan Frame {
 	return s.Conn2Chan
 }
 
-func (s *Supervisor) WriteToWorker(id string, data []byte) {
-	if s.autoCreate {
-		s.autoCreateWorker(id)
+func (s *Supervisor) CloseWorker(id string) {
+	if s.ttlCache.Filter(id) { //only notify remote once to close connection
+		pbConn2ChanLogger.Printf("worker [%s] not exist", id)
+		go func() {
+			s.Conn2Chan <- Frame{Id: id, Type: CLOSE_CONNECTION}
+		}()
 	}
-	worker, exist := s.workers.Load(id)
-	if exist {
-		LogBytes(pbConn2ChanLogger, data)
-		if len(data) > 0 {
-			worker.(*Worker).Chain.Chan2Conn <- data
-		} else {
+}
+
+func (s *Supervisor) WriteToWorker(frame *Frame) {
+	id := frame.Id
+	switch frame.Type {
+	case CLOSE_CONNECTION:
+		worker, ok := s.workers.Load(id)
+		if ok {
 			worker.(*Worker).Destroy(false)
 		}
-	} else {
-		if s.ttlCache.Filter(id) { //only notify remote once to close connection
-			pbConn2ChanLogger.Printf("worker [%s] not exist", id)
-			go func() {
-				s.Conn2Chan <- DataPackage{Id: id}
-			}()
+	case DATA:
+		if s.autoCreate {
+			s.autoCreateWorker(id)
+		}
+		worker, exist := s.workers.Load(id)
+		if exist {
+			LogBytes(pbConn2ChanLogger, frame.Data)
+			worker.(*Worker).Chain.Chan2Conn <- frame.Data
+		} else {
+			if s.ttlCache.Filter(id) { //only notify remote once to close connection
+				pbConn2ChanLogger.Printf("worker [%s] not exist", id)
+				go func() {
+					s.Conn2Chan <- Frame{Id: id, Type: CLOSE_CONNECTION}
+				}()
+			}
 		}
 	}
 }
 
 type Forwarder interface {
-	ReadFromWorker() chan DataPackage
-	WriteToWorker(id string, byteSlices []byte)
+	ReadFromWorker() chan Frame
+	WriteToWorker(frame *Frame)
 	Destroy()
 }
