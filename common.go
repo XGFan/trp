@@ -14,6 +14,8 @@ import (
 )
 
 var logLevel = 1
+var bufferSize = 4096
+var id int32 = 0
 
 func init() {
 	flag.IntVar(&logLevel, "d", 1, "debug")
@@ -119,7 +121,7 @@ func (w *Worker) Destroy(propagate bool) {
 //Conn2Chan read data from connection. then write to shard channel.
 func (w *Worker) Conn2Chan() {
 	for {
-		byteSlice := make([]byte, 4096)
+		byteSlice := make([]byte, bufferSize)
 		readLen, err := w.Conn.Read(byteSlice)
 		if err == nil {
 			byteSlice = byteSlice[:readLen]
@@ -180,7 +182,7 @@ func NewPortBinding(conn net.Conn, sv *Supervisor) *PortBinding {
 func (pb *PortBinding) Conn2Chan() {
 	buf := new(bytes.Buffer)
 	for {
-		byteSlice := make([]byte, 4096)
+		byteSlice := make([]byte, bufferSize)
 		readLen, err := pb.Read(byteSlice)
 		if err != nil {
 			pbConn2ChanLogger.Printf("read from Conn fail: %v", err)
@@ -230,6 +232,7 @@ type Supervisor struct {
 	address    string
 	Conn2Chan  chan DataPackage
 	workers    sync.Map
+	CloseFunc  func()
 }
 
 func NewServerSupervisor() *Supervisor {
@@ -251,11 +254,14 @@ func NewClientSupervisor(f func() net.Conn) *Supervisor {
 }
 
 func (s *Supervisor) Destroy() {
-	//close(s.Conn2Chan)
+	close(s.Conn2Chan)
 	s.workers.Range(func(key, value any) bool {
 		value.(*Worker).Destroy(false)
 		return true
 	})
+	if s.connFunc != nil {
+		s.CloseFunc()
+	}
 }
 
 func (s *Supervisor) autoCreateWorker(id string) {
@@ -273,8 +279,6 @@ func (s *Supervisor) autoCreateWorker(id string) {
 		go worker.(*Worker).Conn2Chan()
 	}
 }
-
-var id int32 = 0
 
 func (s *Supervisor) NewWorker(conn net.Conn) *Worker {
 	newId := atomic.AddInt32(&id, 1)

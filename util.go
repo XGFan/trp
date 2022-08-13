@@ -2,6 +2,7 @@ package trp
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -52,4 +53,76 @@ func (t *TTLCache) Filter(id string) bool {
 		t.lock.Unlock()
 	}
 	return shouldPass
+}
+
+type Circle[T comparable] struct {
+	current *Node[T]
+	lock    sync.RWMutex
+}
+
+type Node[T any] struct {
+	value T
+	next  *Node[T]
+}
+
+func (ss *Circle[T]) Add(item T) {
+	ss.lock.Lock()
+	defer ss.lock.Unlock()
+	if ss.current == nil {
+		ss.current = &Node[T]{
+			value: item,
+		}
+		ss.current.next = ss.current
+	} else {
+		p := ss.current
+		newItem := &Node[T]{
+			value: item,
+			next:  p,
+		}
+		for p.next != ss.current {
+			p = p.next
+		}
+		p.next = newItem
+		ss.current = newItem
+	}
+}
+
+func (ss *Circle[T]) Next() (ret T) {
+	ss.lock.RLock()
+	defer ss.lock.RUnlock()
+	ret, ss.current = ss.current.value, ss.current.next
+	return
+}
+
+func (ss *Circle[T]) Remove(v T) {
+	ss.lock.RLock()
+	defer ss.lock.RUnlock()
+	p := ss.current
+	if p == nil {
+		return
+	}
+	for p.value != v && p.next != ss.current {
+		p = p.next
+	}
+	if p.value == v {
+		q := ss.current.next
+		for q.next != p {
+			q = q.next
+		}
+		q.next = p.next
+		if ss.current == p {
+			ss.current = p.next
+		}
+	}
+}
+
+func (ss *Circle[T]) Stringer() string {
+	p := ss.current
+	ts := make([]T, 0)
+	ts = append(ts, p.value)
+	for p.next != ss.current {
+		ts = append(ts, p.next.value)
+		p = p.next
+	}
+	return fmt.Sprintf("%+v", ts)
 }
