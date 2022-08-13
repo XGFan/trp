@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,24 +40,14 @@ func LogBytes(logger *log.Logger, bytes []byte) {
 
 type FrameType int
 
-const (
-	ERROR FrameType = -1
-	DATA  FrameType = iota
-	CLOSE
-)
-
 func Assemble(id string, byteSlice []byte) []byte {
 	newBytes := make([]byte, 32+len(byteSlice))
 	copy(newBytes, id)
-	if byteSlice == nil || len(byteSlice) == 0 {
-		newBytes[16] = 1
-	} else {
-		newBytes[16] = 0
-	}
-	copy(newBytes[17:25], Int64ToBytes(int64(len(newBytes))))
+	copy(newBytes[24:32], Int64ToBytes(int64(len(newBytes))))
 	copy(newBytes[32:], byteSlice)
 	return newBytes
 }
+
 func ParseAll(buf []byte) ([]Frame, []byte) {
 	ret := make([]Frame, 0)
 	remain := Parse(buf, &ret)
@@ -69,14 +60,12 @@ func Parse(buf []byte, frames *[]Frame) []byte {
 		return buf
 	}
 	id := string(buf[:16])
-	frameType := FrameType(int(buf[16]))
-	totalLen := BytesToInt64(buf[17:25])
+	totalLen := BytesToInt64(buf[24:32])
 	if totalLen > int64(len(buf)) {
 		return buf
 	}
 	*frames = append(*frames, Frame{
 		Id:   id,
-		Type: frameType,
 		Data: buf[32:totalLen],
 	})
 	return Parse(buf[totalLen:], frames)
@@ -84,7 +73,6 @@ func Parse(buf []byte, frames *[]Frame) []byte {
 
 type Frame struct {
 	Id   string
-	Type FrameType
 	Data []byte
 }
 
@@ -103,10 +91,22 @@ func (w *Worker) Destroy(propagate bool) {
 		if propagate {
 			//propagate: local connection closed, should notify remote to close same id worker
 			commonLogger.Printf("[%s] local Conn closed, destroy and propagate", w.Id)
-			w.Chain.Conn2Chan <- DataPackage{
-				Id:   w.Id,
-				Data: nil,
-			}
+			w.Chain.Conn2Chan <- DataPackage{Id: w.Id}
+			defer func() {
+				//remove worker from workers
+				//and receive all msg, discard it
+				//close chan
+			loop:
+				for {
+					select {
+					case <-w.Chain.Chan2Conn:
+					default:
+						commonLogger.Printf("[%s] peacefully destroyed", w.Id)
+						close(w.Chain.Chan2Conn)
+						break loop
+					}
+				}
+			}()
 		} else {
 			//receive remote chan close signal, to close local connection
 			commonLogger.Printf("[%s] remote chan closed, destroy", w.Id)
@@ -129,18 +129,18 @@ func (w *Worker) Conn2Chan() {
 			}
 			LogBytes(conn2ChanLogger, byteSlice)
 		} else {
-			break
+			w.Destroy(true)
 		}
 	}
-	w.Destroy(true)
 }
 
 // Chan2Conn read data from dedicated chan, then write to connection
 func (w *Worker) Chan2Conn() {
 	for byteSlice := range w.Chain.Chan2Conn {
+		_ = w.Conn.SetWriteDeadline(time.Now().Add(time.Second * 2))
 		_, err := w.Conn.Write(byteSlice)
 		if err != nil {
-			//connection error
+			//connection error or timeout
 			w.Destroy(true)
 			return
 		} else {
@@ -196,12 +196,9 @@ func (pb *PortBinding) Conn2Chan() {
 		}
 		buf.Write(remain)
 	}
-	pbConn2ChanLogger.Print("remote closed connection, close all chan")
-	//simply close all chan
-	//for _, c := range pb.forwarder.Chan2Conn {
-	//	close(c)
-	//}
+	pbConn2ChanLogger.Print("remote closed connection, clean up")
 	pb.notify <- struct{}{}
+	pb.forwarder.Destroy()
 }
 
 // Chan2Conn read data from shared channel, then write it to connection
@@ -226,6 +223,8 @@ loop:
 }
 
 type Supervisor struct {
+	connFunc   func() net.Conn
+	ttlCache   *TTLCache
 	autoCreate bool
 	address    string
 	Conn2Chan  chan DataPackage
@@ -234,54 +233,58 @@ type Supervisor struct {
 
 func NewServerSupervisor() *Supervisor {
 	return &Supervisor{
+		ttlCache:  NewTTLCache(time.Second * 10),
 		Conn2Chan: make(chan DataPackage, 0),
 		workers:   sync.Map{},
 	}
 }
 
-func NewClientSupervisor(address string) *Supervisor {
+func NewClientSupervisor(f func() net.Conn) *Supervisor {
 	return &Supervisor{
+		connFunc:   f,
+		ttlCache:   NewTTLCache(time.Second * 10),
 		autoCreate: true,
-		address:    address,
 		Conn2Chan:  make(chan DataPackage, 0),
 		workers:    sync.Map{},
 	}
 }
 
-func (s *Supervisor) AutoCreateWorker(id string) {
+func (s *Supervisor) Destroy() {
+	//close(s.Conn2Chan)
+	s.workers.Range(func(key, value any) bool {
+		value.(*Worker).Destroy(false)
+		return true
+	})
+}
+
+func (s *Supervisor) autoCreateWorker(id string) {
+	if !s.ttlCache.Filter(id) {
+		return
+	}
 	worker, exist := s.workers.Load(id)
 	if exist {
 		return
 	}
-	conn, _ := net.Dial("tcp", s.address)
-	worker = s.CreateWorker(id, conn)
-	s.workers.Store(id, worker)
-	go worker.(*Worker).Chan2Conn()
-	go worker.(*Worker).Conn2Chan()
+	conn := s.connFunc()
+	if conn != nil {
+		worker = s.CreateWorker(id, conn)
+		go worker.(*Worker).Chan2Conn()
+		go worker.(*Worker).Conn2Chan()
+	}
 }
 
-func (s *Supervisor) AllocateWorkerByConn(conn net.Conn) *Worker {
-	worker := s.NewWorker(conn)
-	s.workers.Store(worker.Id, worker)
-	return worker
-}
+var id int32 = 0
 
 func (s *Supervisor) NewWorker(conn net.Conn) *Worker {
-	var id string
-	for {
-		id = RandomString(16)
-		_, exist := s.workers.Load(id)
-		if !exist {
-			break
-		}
-	}
-	return s.CreateWorker(id, conn)
+	newId := atomic.AddInt32(&id, 1)
+	worker := s.CreateWorker(fmt.Sprintf("%016d", newId), conn)
+	return worker
 }
 
 func (s *Supervisor) CreateWorker(id string, conn net.Conn) *Worker {
 	commonLogger.Printf("[%s] worker created", id)
-	newChan := make(chan []byte, 0)
-	return &Worker{
+	newChan := make(chan []byte, 1)
+	worker := &Worker{
 		Id: id,
 		Chain: &DuplexChain{
 			Chan2Conn: newChan,
@@ -293,6 +296,8 @@ func (s *Supervisor) CreateWorker(id string, conn net.Conn) *Worker {
 		},
 		o: sync.Once{},
 	}
+	s.workers.Store(worker.Id, worker)
+	return worker
 }
 
 func (s *Supervisor) ReadFromWorker() chan DataPackage {
@@ -301,30 +306,28 @@ func (s *Supervisor) ReadFromWorker() chan DataPackage {
 
 func (s *Supervisor) WriteToWorker(id string, data []byte) {
 	if s.autoCreate {
-		s.AutoCreateWorker(id)
+		s.autoCreateWorker(id)
 	}
 	worker, exist := s.workers.Load(id)
 	if exist {
-		//LogBytes(pbConn2ChanLogger, frame.Data)
-		if data != nil && len(data) > 0 {
-			timer := time.NewTimer(time.Second)
-			select {
-			case worker.(*Worker).Chain.Chan2Conn <- data:
-
-			case <-timer.C:
-				commonLogger.Printf("[%s] worker should be busy or dead", id)
-				s.workers.Delete(id)
-			}
+		LogBytes(pbConn2ChanLogger, data)
+		if len(data) > 0 {
+			worker.(*Worker).Chain.Chan2Conn <- data
 		} else {
-			pbConn2ChanLogger.Printf("get notify from remote, close worker %s", id)
-			close(worker.(*Worker).Chain.Chan2Conn)
+			worker.(*Worker).Destroy(false)
 		}
 	} else {
-		pbConn2ChanLogger.Printf("worker [%s] not exist", id)
+		if s.ttlCache.Filter("notify" + id) {
+			pbConn2ChanLogger.Printf("worker [%s] not exist", id)
+			go func() {
+				s.Conn2Chan <- DataPackage{Id: id}
+			}()
+		}
 	}
 }
 
 type Forwarder interface {
 	ReadFromWorker() chan DataPackage
 	WriteToWorker(id string, byteSlices []byte)
+	Destroy()
 }

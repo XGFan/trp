@@ -23,7 +23,10 @@ func main() {
 	flag.Parse()
 	clientLogger.Printf("connect to %s", serverAddr)
 	clientLogger.Printf("requests from remote will forward to %s", localAddr)
-	supervisor := trp.NewClientSupervisor(localAddr)
+	supervisor := trp.NewClientSupervisor(func() net.Conn {
+		conn, _ := net.Dial("tcp", localAddr)
+		return conn
+	})
 	for {
 		clientDialer, err := net.Dial("tcp", serverAddr)
 		if err != nil {

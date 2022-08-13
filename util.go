@@ -2,7 +2,7 @@ package trp
 
 import (
 	"encoding/binary"
-	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -16,18 +16,40 @@ func BytesToInt64(bytes []byte) int64 {
 	return int64(binary.LittleEndian.Uint64(bytes[0:8]))
 }
 
-const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-var seededRand = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-func StringWithCharset(length int, charset string) string {
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[seededRand.Intn(len(charset))]
-	}
-	return string(b)
+type TTLCache struct {
+	TTL       time.Duration
+	storage   map[string]time.Time
+	lock      sync.RWMutex
+	lastClean time.Time
 }
 
-func RandomString(length int) string {
-	return StringWithCharset(length, charset)
+func NewTTLCache(ttl time.Duration) *TTLCache {
+	cache := TTLCache{
+		TTL:       ttl,
+		storage:   make(map[string]time.Time, 0),
+		lock:      sync.RWMutex{},
+		lastClean: time.Now(),
+	}
+	return &cache
+}
+
+func (t *TTLCache) Filter(id string) bool {
+	t.lock.RLock()
+	v, exist := t.storage[id]
+	t.lock.RUnlock()
+	shouldPass := !exist || v.Before(time.Now())
+	if shouldPass {
+		t.lock.Lock()
+		t.storage[id] = time.Now().Add(t.TTL)
+		if t.lastClean.Add(time.Minute).Before(time.Now()) {
+			for k, vv := range t.storage {
+				if vv.Before(time.Now()) {
+					delete(t.storage, k)
+				}
+			}
+			t.lastClean = time.Now()
+		}
+		t.lock.Unlock()
+	}
+	return shouldPass
 }

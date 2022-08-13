@@ -46,7 +46,7 @@ func ListenLocal(sv *trp.Supervisor) {
 	forwardListener, _ := net.Listen("tcp", localAddr)
 	for {
 		conn, _ := forwardListener.Accept()
-		worker := sv.AllocateWorkerByConn(conn)
+		worker := sv.NewWorker(conn)
 		go worker.Chan2Conn()
 		go worker.Conn2Chan()
 	}
