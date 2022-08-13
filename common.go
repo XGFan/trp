@@ -130,6 +130,7 @@ func (w *Worker) Conn2Chan() {
 			LogBytes(conn2ChanLogger, byteSlice)
 		} else {
 			w.Destroy(true)
+			return
 		}
 	}
 }
@@ -317,7 +318,7 @@ func (s *Supervisor) WriteToWorker(id string, data []byte) {
 			worker.(*Worker).Destroy(false)
 		}
 	} else {
-		if s.ttlCache.Filter("notify" + id) {
+		if s.ttlCache.Filter(id) { //only notify remote once to close connection
 			pbConn2ChanLogger.Printf("worker [%s] not exist", id)
 			go func() {
 				s.Conn2Chan <- DataPackage{Id: id}
