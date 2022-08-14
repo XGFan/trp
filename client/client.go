@@ -26,7 +26,7 @@ func init() {
 func main() {
 	flag.Parse()
 	clientLogger.Printf("connect to %s", serverAddr)
-	clientLogger.Printf("requests from remote will forward to %s", localAddr)
+	clientLogger.Printf("requests from remote %d will forward to %s", remotePort, localAddr)
 	for i := 0; i < connections; i++ {
 		go connectServer()
 	}
@@ -52,13 +52,13 @@ func connectServer() {
 			continue
 		}
 		clientLogger.Printf("connected to server")
-		trpBinding := trp.NewPortBinding(conn, supervisor)
-		go trpBinding.Conn2Chan()
-		trpBinding.Chan2Conn()
+		multiplexer := trp.NewMultiplexer(conn, supervisor)
+		go multiplexer.Conn2Chan()
+		multiplexer.Chan2Conn()
 	}
 }
 
 func InitConn(conn net.Conn, port int) error {
-	_, err := conn.Write(trp.Assemble(&trp.Frame{Id: " JUST HAVE FUN! ", Type: trp.BIND, Data: trp.Int16ToBytes(port)}))
+	_, err := conn.Write(trp.Assemble(&trp.Frame{Id: " JUST HAVE FUN! ", Type: trp.BIND, Data: trp.IntTo2Bytes(port)}))
 	return err
 }

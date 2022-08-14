@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 	"trp"
 )
 
@@ -25,6 +26,7 @@ func main() {
 }
 
 func ListenClient() {
+	var pmg PortMappingGroup = make(map[int]*PortMapping, 0)
 	clientListener, _ := net.Listen("tcp", serverAddr)
 	for {
 		conn, err := clientListener.Accept()
@@ -33,57 +35,108 @@ func ListenClient() {
 			_ = conn.Close()
 			continue
 		}
-		ss, err := InitConn(conn)
+		port, err := InitConn(conn)
+		serverLogger.Printf("client connected")
 		if err != nil {
 			serverLogger.Printf("init with client fail: %v", err)
 			_ = conn.Close()
 			continue
 		}
-		supervisor := trp.NewServerSupervisor()
-		serverLogger.Printf("client connected")
-		trpBinding := trp.NewPortBinding(conn, supervisor)
-		go trpBinding.Conn2Chan()
-		go trpBinding.Chan2Conn()
-		ss.Add(supervisor)
-		supervisor.CloseFunc = func() {
-			ss.Remove(supervisor)
-			_ = conn.Close()
-		}
+		pmg.Register(port).AcceptClient(conn)
 	}
 }
 
-var LocalListeners = make(map[int]*trp.Circle[*trp.Supervisor], 0)
-
-func InitConn(conn net.Conn) (*trp.Circle[*trp.Supervisor], error) {
+func InitConn(conn net.Conn) (int, error) {
 	initCmd := make([]byte, 32)
 	_, err := conn.Read(initCmd)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	all, _ := trp.ParseAll(initCmd)
+	all, _ := trp.ParseAll(&trp.SliceLink[byte]{Head: initCmd})
 	if len(all) == 1 && all[0].Type == trp.BIND {
-		port := trp.BytesToInt16(all[0].Data)
-		ss, exist := LocalListeners[port]
-		if exist {
-			return ss, nil
-		} else {
-			ss = &trp.Circle[*trp.Supervisor]{}
-			LocalListeners[port] = ss
-			go ListenLocal(ss, port)
-			return ss, nil
-		}
+		port := all[0].ParsePort()
+		return port, nil
 	} else {
-		return nil, errors.New("wrong init data")
+		return 0, errors.New("wrong init data")
 	}
 }
 
-func ListenLocal(ss *trp.Circle[*trp.Supervisor], port int) {
-	forwardListener, _ := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	for {
-		conn, _ := forwardListener.Accept()
-		supervisor := ss.Next()
-		worker := supervisor.NewWorker(conn)
-		go worker.Chan2Conn()
-		go worker.Conn2Chan()
+type PortMappingGroup map[int]*PortMapping
+
+func (pmg *PortMappingGroup) Register(port int) *PortMapping {
+	pm, exist := (*pmg)[port]
+	if !exist {
+		pm = NewPortMapping(port)
+		(*pmg)[port] = pm
 	}
+	return pm
+}
+
+type PortMapping struct {
+	Port   int
+	chains *trp.Circle[*PortMappingChain]
+	wg     sync.WaitGroup
+}
+
+func NewPortMapping(port int) *PortMapping {
+	pm := &PortMapping{
+		Port:   port,
+		chains: &trp.Circle[*PortMappingChain]{},
+	}
+	pm.Run()
+	return pm
+}
+
+func (pm *PortMapping) Start() {
+	pm.wg.Wait()
+}
+
+func (pm *PortMapping) AcceptClient(conn net.Conn) {
+	pm.wg.Add(1)
+	supervisor := trp.NewServerSupervisor()
+	multiplexer := trp.NewMultiplexer(conn, supervisor)
+
+	pmc := &PortMappingChain{
+		Multiplexer: multiplexer,
+		Supervisor:  supervisor,
+		wg:          &pm.wg,
+	}
+	multiplexer.DestroyHook = func() {
+		pm.chains.Remove(pmc)
+		pmc.wg.Done()
+	}
+	pmc.Start()
+	pm.chains.Add(pmc)
+}
+
+func (pm *PortMapping) Accept(conn net.Conn) {
+	pm.chains.Next().AcceptConn(conn)
+}
+
+func (pm *PortMapping) Run() {
+	go func() {
+		forwardListener, err := net.Listen("tcp", fmt.Sprintf(":%d", pm.Port))
+		serverLogger.Printf("listen %d", pm.Port)
+		if err != nil {
+			return
+		}
+		for {
+			conn, _ := forwardListener.Accept()
+			pm.Accept(conn)
+		}
+	}()
+}
+
+type PortMappingChain struct {
+	Multiplexer *trp.Multiplexer
+	Supervisor  *trp.Supervisor
+	wg          *sync.WaitGroup
+}
+
+func (pmc *PortMappingChain) Start() {
+	pmc.Multiplexer.Run()
+}
+
+func (pmc *PortMappingChain) AcceptConn(conn net.Conn) {
+	go pmc.Supervisor.NewWorker(conn).Run()
 }
