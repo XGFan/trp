@@ -43,14 +43,13 @@ func (w *Worker) Destroy(propagate bool) {
 		if propagate {
 			//propagate: local connection closed, should notify remote to close same id worker
 			commonLogger.Printf("[%s] local Conn closed, destroy and propagate", w.Id)
-			w.SharedWriteChan <- Frame{Id: w.Id}
+			w.SharedWriteChan <- Frame{Id: w.Id, Type: CLOSE}
 			//remove worker from workers
 			//and consume all unsent msg, discard it
 			for {
 				select {
 				case <-w.DedicatedReadChan:
 				default:
-					commonLogger.Printf("[%s] peacefully destroyed", w.Id)
 					return
 				}
 			}
