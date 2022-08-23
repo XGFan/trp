@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"trp"
 )
 
@@ -93,12 +94,10 @@ func (pm *PortMapping) Start() {
 
 func (pm *PortMapping) AcceptClient(conn net.Conn) {
 	pm.wg.Add(1)
-	supervisor := trp.NewServerSupervisor()
-	multiplexer := trp.NewMultiplexer(conn, supervisor)
+	multiplexer := trp.NewServerMultiplexer(conn)
 
 	pmc := &PortMappingChain{
 		Multiplexer: multiplexer,
-		Supervisor:  supervisor,
 		wg:          &pm.wg,
 	}
 	multiplexer.DestroyHook = func() {
@@ -129,7 +128,6 @@ func (pm *PortMapping) Run() {
 
 type PortMappingChain struct {
 	Multiplexer *trp.Multiplexer
-	Supervisor  *trp.Supervisor
 	wg          *sync.WaitGroup
 }
 
@@ -137,6 +135,9 @@ func (pmc *PortMappingChain) Start() {
 	pmc.Multiplexer.Run()
 }
 
+var id int32 = 1 //TODO where should you go?
+
 func (pmc *PortMappingChain) AcceptConn(conn net.Conn) {
-	go pmc.Supervisor.NewWorker(conn).Run()
+	newId := atomic.AddInt32(&id, 1)
+	go pmc.Multiplexer.WorkerGroup.CreateWorker(fmt.Sprintf("%016d", newId), conn).Run()
 }

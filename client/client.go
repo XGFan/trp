@@ -34,10 +34,6 @@ func main() {
 }
 
 func connectServer() {
-	supervisor := trp.NewClientSupervisor(func() net.Conn {
-		conn, _ := net.Dial("tcp", localAddr)
-		return conn
-	})
 	for {
 		conn, err := net.Dial("tcp", serverAddr)
 		if err != nil {
@@ -52,7 +48,10 @@ func connectServer() {
 			continue
 		}
 		clientLogger.Printf("connected to server")
-		multiplexer := trp.NewMultiplexer(conn, supervisor)
+		multiplexer := trp.NewClientMultiplexer(conn, func() net.Conn {
+			conn, _ := net.Dial("tcp", localAddr)
+			return conn
+		})
 		go multiplexer.Conn2Chan()
 		multiplexer.Chan2Conn()
 	}
