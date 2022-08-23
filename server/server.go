@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"sync"
 	"sync/atomic"
 	"trp"
 )
@@ -15,6 +14,7 @@ import (
 var serverLogger = log.New(os.Stdout, "[Server] ", log.Ldate|log.Ltime|log.Lshortfile|log.Lmsgprefix)
 
 var serverAddr string
+var id int32 = 1 //TODO where should you go?
 
 func init() {
 	flag.StringVar(&serverAddr, "s", "127.0.0.1:2345", "server listen addr")
@@ -43,7 +43,7 @@ func ListenClient() {
 			_ = conn.Close()
 			continue
 		}
-		pmg.Register(port).AcceptClient(conn)
+		go pmg.Register(port).CreateMultiplexer(conn)
 	}
 }
 
@@ -75,41 +75,32 @@ func (pmg *PortMappingGroup) Register(port int) *PortMapping {
 
 type PortMapping struct {
 	Port   int
-	chains *trp.Circle[*PortMappingChain]
-	wg     sync.WaitGroup
+	chains *trp.Circle[*trp.Multiplexer]
 }
 
 func NewPortMapping(port int) *PortMapping {
 	pm := &PortMapping{
 		Port:   port,
-		chains: &trp.Circle[*PortMappingChain]{},
+		chains: &trp.Circle[*trp.Multiplexer]{},
 	}
 	pm.Run()
 	return pm
 }
 
-func (pm *PortMapping) Start() {
-	pm.wg.Wait()
-}
-
-func (pm *PortMapping) AcceptClient(conn net.Conn) {
-	pm.wg.Add(1)
+// CreateMultiplexer when client dial in, create a new multiplexer, add it to chains. when it is closed or stopped, remove it.
+func (pm *PortMapping) CreateMultiplexer(conn net.Conn) {
 	multiplexer := trp.NewServerMultiplexer(conn)
-
-	pmc := &PortMappingChain{
-		Multiplexer: multiplexer,
-		wg:          &pm.wg,
-	}
-	multiplexer.DestroyHook = func() {
-		pm.chains.Remove(pmc)
-		pmc.wg.Done()
-	}
-	pmc.Start()
-	pm.chains.Add(pmc)
+	pm.chains.Add(multiplexer)
+	defer pm.chains.Remove(multiplexer)
+	go multiplexer.Chan2Conn()
+	multiplexer.Conn2Chan()
 }
 
-func (pm *PortMapping) Accept(conn net.Conn) {
-	pm.chains.Next().AcceptConn(conn)
+// UsingMultiplexer when local port dial in, find a multiplexer, pass to it.
+func (pm *PortMapping) UsingMultiplexer(conn net.Conn) {
+	mux := pm.chains.Next()
+	newId := atomic.AddInt32(&id, 1)
+	go mux.WorkerGroup.CreateWorker(fmt.Sprintf("%016d", newId), conn).Run()
 }
 
 func (pm *PortMapping) Run() {
@@ -121,23 +112,7 @@ func (pm *PortMapping) Run() {
 		}
 		for {
 			conn, _ := forwardListener.Accept()
-			pm.Accept(conn)
+			pm.UsingMultiplexer(conn)
 		}
 	}()
-}
-
-type PortMappingChain struct {
-	Multiplexer *trp.Multiplexer
-	wg          *sync.WaitGroup
-}
-
-func (pmc *PortMappingChain) Start() {
-	pmc.Multiplexer.Run()
-}
-
-var id int32 = 1 //TODO where should you go?
-
-func (pmc *PortMappingChain) AcceptConn(conn net.Conn) {
-	newId := atomic.AddInt32(&id, 1)
-	go pmc.Multiplexer.WorkerGroup.CreateWorker(fmt.Sprintf("%016d", newId), conn).Run()
 }

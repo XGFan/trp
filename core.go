@@ -124,11 +124,6 @@ func NewServerMultiplexer(conn net.Conn) *Multiplexer {
 	}
 }
 
-func (mp *Multiplexer) Run() {
-	go mp.Conn2Chan()
-	go mp.Chan2Conn()
-}
-
 // Conn2Chan read data from connection, then write it to dedicated channel
 func (mp *Multiplexer) Conn2Chan() {
 	buf := make([]byte, 0, bufferSize)
@@ -277,7 +272,7 @@ func (s *ClientSupervisor) autoCreateWorker(id string) {
 	conn := s.connFunc()
 	if conn != nil {
 		worker = s.CreateWorker(id, conn)
-		go worker.(*Worker).Run()
+		worker.(*Worker).Run()
 	}
 }
 
