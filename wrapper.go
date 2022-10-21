@@ -42,13 +42,13 @@ func Assemble(frame *Frame) []byte {
 	return nil
 }
 
-func ParseAll(node *SliceLink[byte]) ([]Frame, []byte) {
+func ParseAll(node *LinkSlice[byte]) ([]Frame, []byte) {
 	ret := make([]Frame, 0)
 	remain := Parse(node, &ret)
 	return ret, remain.Data()
 }
 
-func Parse(buf *SliceLink[byte], frames *[]Frame) *SliceLink[byte] {
+func Parse(buf *LinkSlice[byte], frames *[]Frame) *LinkSlice[byte] {
 	if buf.Len() < 32 {
 		return buf
 	}
