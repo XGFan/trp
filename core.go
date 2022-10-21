@@ -17,12 +17,12 @@ var conn2ChanLogger = log.New(os.Stdout, "[LF][Conn ---> Chan] ", log.Ldate|log.
 var chan2ConnLogger = log.New(os.Stdout, "[LF][Chan ---> Conn] ", log.Ldate|log.Lmicroseconds|log.Lshortfile|log.Lmsgprefix)
 var commonLogger = log.New(os.Stdout, "[Common] ", log.Ldate|log.Lmicroseconds|log.Lshortfile|log.Lmsgprefix)
 
-// Worker create bridge between local port connection net.Conn and Channel
+// Forwarder create bridge between local port connection net.Conn and Channel
 //
 // one connection, one shared channel, one dedicated channel, and two goroutine
 //
 // functions: read Conn, write to shared channel, read dedicated channel write to Conn
-type Worker struct {
+type Forwarder struct {
 	Id                string
 	Conn              net.Conn
 	SharedWriteChan   chan<- Frame
@@ -31,13 +31,13 @@ type Worker struct {
 	destroyLock       sync.Once
 }
 
-func (w *Worker) Run() {
-	go w.forwardConnection2Channel()
-	go w.forwardChannel2Connection()
+func (w *Forwarder) Run() {
+	go w.Conn2Chan()
+	go w.Chan2Conn()
 }
 
 // Destroy just destroy worker and resource
-func (w *Worker) Destroy(propagate bool) {
+func (w *Forwarder) Destroy(propagate bool) {
 	w.destroyLock.Do(func() {
 		w.Alive = false
 		if propagate {
@@ -61,8 +61,8 @@ func (w *Worker) Destroy(propagate bool) {
 	})
 }
 
-// forwardConnection2Channel read data from connection. then write to shard channel.
-func (w *Worker) forwardConnection2Channel() {
+// Conn2Chan read data from connection. then write to shard channel.
+func (w *Forwarder) Conn2Chan() {
 	for {
 		byteSlice := make([]byte, bufferSize)
 		readLen, err := w.Conn.Read(byteSlice)
@@ -80,8 +80,8 @@ func (w *Worker) forwardConnection2Channel() {
 	}
 }
 
-// forwardChannel2Connection read data from dedicated chan, then write to connection
-func (w *Worker) forwardChannel2Connection() {
+// Chan2Conn read data from dedicated chan, then write to connection
+func (w *Forwarder) Chan2Conn() {
 	for byteSlice := range w.DedicatedReadChan {
 		_ = w.Conn.SetWriteDeadline(time.Now().Add(time.Second * 2))
 		_, err := w.Conn.Write(byteSlice)
@@ -105,21 +105,26 @@ func (w *Worker) forwardChannel2Connection() {
 type Multiplexer struct {
 	net.Conn
 	WorkerGroup
+	muxChan     chan Frame
 	destroyLock sync.Once
 	DestroyHook func()
 }
 
 func NewClientMultiplexer(conn net.Conn, f func() net.Conn) *Multiplexer {
+	muxChan := make(chan Frame, 10)
 	return &Multiplexer{
 		Conn:        conn,
-		WorkerGroup: NewClientWorkerGroup(f),
+		muxChan:     muxChan,
+		WorkerGroup: NewClientWorkerGroup(muxChan, f),
 	}
 }
 
 func NewServerMultiplexer(conn net.Conn) *Multiplexer {
+	muxChan := make(chan Frame, 10)
 	return &Multiplexer{
 		Conn:        conn,
-		WorkerGroup: NewServerWorkerGroup(),
+		muxChan:     muxChan,
+		WorkerGroup: NewServerWorkerGroup(muxChan),
 	}
 }
 
@@ -141,9 +146,9 @@ func (mp *Multiplexer) Conn2Chan() {
 		for _, frame := range frames {
 			switch frame.Type {
 			case DATA:
-				mp.WriteToWorker(frame.Id, frame.Data)
+				mp.Forward(frame.Id, frame.Data)
 			case CLOSE:
-				mp.CloseWorker(frame.Id)
+				mp.WorkerGroup.Close(frame.Id)
 			}
 		}
 		buf = remain
@@ -153,7 +158,7 @@ func (mp *Multiplexer) Conn2Chan() {
 
 // Chan2Conn read data from shared channel, then write it to connection
 func (mp *Multiplexer) Chan2Conn() {
-	for frame := range mp.GetChannel() {
+	for frame := range mp.muxChan {
 		newBytes := Assemble(&frame)
 		size, err := mp.Write(newBytes)
 		if frame.Data != nil {
@@ -178,21 +183,17 @@ func (mp *Multiplexer) Destroy() {
 }
 
 type Supervisor struct {
-	ttlCache   *TTLCache
-	sharedChan chan Frame
-	workers    sync.Map
+	ttlCache *TTLCache
+	muxChan  chan Frame
+	workers  sync.Map
 }
 
-func (s *Supervisor) GetChannel() chan Frame {
-	return s.sharedChan
-}
-
-func (s *Supervisor) WriteToWorker(id string, data []byte) {
+func (s *Supervisor) Forward(id string, data []byte) {
 	worker, exist := s.workers.Load(id)
 	if exist {
-		if worker.(*Worker).Alive {
+		if worker.(*Forwarder).Alive {
 			LogBytes(pbConn2ChanLogger, data)
-			worker.(*Worker).DedicatedReadChan <- data
+			worker.(*Forwarder).DedicatedReadChan <- data
 		} else {
 			s.workers.Delete(id)
 		}
@@ -200,63 +201,63 @@ func (s *Supervisor) WriteToWorker(id string, data []byte) {
 		//if s.ttlCache.Filter(id) { //only notify remote once to close connection
 		//	pbConn2ChanLogger.Printf("worker [%s] not exist", id)
 		//	go func() {
-		//		s.sharedChan <- Frame{Id: id, Type: CLOSE}
+		//		s.muxChan <- Frame{Id: id, Type: CLOSE}
 		//	}()
 		//}
 	}
 }
 
-func (s *Supervisor) CloseWorker(id string) {
+func (s *Supervisor) Close(id string) {
 	worker, ok := s.workers.Load(id)
 	if ok {
-		worker.(*Worker).Destroy(false)
+		worker.(*Forwarder).Destroy(false)
 	}
 }
 
 func (s *Supervisor) Destroy() {
-	close(s.sharedChan)
+	close(s.muxChan)
 	s.workers.Range(func(key, value any) bool {
-		value.(*Worker).Destroy(false)
+		value.(*Forwarder).Destroy(false)
 		return true
 	})
 }
 
-func (s *Supervisor) CreateWorker(id string, conn net.Conn) *Worker {
+func (s *Supervisor) Create(id string, conn net.Conn) {
 	commonLogger.Printf("[%s] worker created", id)
 	newChan := make(chan []byte, 1)
-	worker := &Worker{
+	worker := &Forwarder{
 		Id:                id,
-		SharedWriteChan:   s.sharedChan,
+		SharedWriteChan:   s.muxChan,
 		DedicatedReadChan: newChan,
 		Conn:              conn,
 		Alive:             true,
 		destroyLock:       sync.Once{},
 	}
 	s.workers.Store(worker.Id, worker)
-	return worker
+	worker.Run()
 }
 
 type ClientSupervisor struct {
 	Supervisor
-	connFunc func() net.Conn
+	connectFunc func() net.Conn
 }
 
-func NewServerWorkerGroup() WorkerGroup {
+func NewServerWorkerGroup(muxChan chan Frame) WorkerGroup {
 	return &Supervisor{
-		ttlCache:   NewTTLCache(time.Second * 10),
-		sharedChan: make(chan Frame, 10),
-		workers:    sync.Map{},
+		ttlCache: NewTTLCache(time.Second * 10),
+		muxChan:  muxChan,
+		workers:  sync.Map{},
 	}
 }
 
-func NewClientWorkerGroup(f func() net.Conn) WorkerGroup {
+func NewClientWorkerGroup(muxChan chan Frame, connectFunc func() net.Conn) WorkerGroup {
 	return &ClientSupervisor{
 		Supervisor: Supervisor{
-			ttlCache:   NewTTLCache(time.Second * 10),
-			sharedChan: make(chan Frame, 10),
-			workers:    sync.Map{},
+			ttlCache: NewTTLCache(time.Second * 10),
+			muxChan:  muxChan,
+			workers:  sync.Map{},
 		},
-		connFunc: f,
+		connectFunc: connectFunc,
 	}
 }
 
@@ -264,27 +265,25 @@ func (s *ClientSupervisor) autoCreateWorker(id string) {
 	if !s.ttlCache.Filter(id) {
 		return
 	}
-	worker, exist := s.workers.Load(id)
+	_, exist := s.workers.Load(id)
 	if exist {
 		return
 	}
-	conn := s.connFunc()
+	conn := s.connectFunc()
 	if conn != nil {
-		worker = s.CreateWorker(id, conn)
-		worker.(*Worker).Run()
+		s.Create(id, conn)
 	}
 }
 
-func (s *ClientSupervisor) WriteToWorker(id string, data []byte) {
+func (s *ClientSupervisor) Forward(id string, data []byte) {
 	s.autoCreateWorker(id)
-	s.Supervisor.WriteToWorker(id, data)
+	s.Supervisor.Forward(id, data)
 }
 
 // WorkerGroup manage a group of worker
 type WorkerGroup interface {
-	GetChannel() chan Frame
-	CreateWorker(id string, conn net.Conn) *Worker
-	WriteToWorker(id string, data []byte)
-	CloseWorker(id string)
+	Create(id string, conn net.Conn)
+	Forward(id string, data []byte)
+	Close(id string)
 	Destroy()
 }
