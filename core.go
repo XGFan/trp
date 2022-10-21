@@ -103,9 +103,9 @@ func (w *Forwarder) Chan2Conn() {
 //
 // functions: read Conn, write to dedicated worker's channel, read shared channel write to Conn
 type Multiplexer struct {
-	net.Conn
-	WorkerGroup
-	muxChan     chan Frame
+	Conn        net.Conn
+	Forwarders  WorkerGroup
+	MuxChan     <-chan Frame
 	destroyLock sync.Once
 	DestroyHook func()
 }
@@ -113,18 +113,18 @@ type Multiplexer struct {
 func NewClientMultiplexer(conn net.Conn, f func() net.Conn) *Multiplexer {
 	muxChan := make(chan Frame, 10)
 	return &Multiplexer{
-		Conn:        conn,
-		muxChan:     muxChan,
-		WorkerGroup: NewClientWorkerGroup(muxChan, f),
+		Conn:       conn,
+		MuxChan:    muxChan,
+		Forwarders: NewClientWorkerGroup(muxChan, f),
 	}
 }
 
 func NewServerMultiplexer(conn net.Conn) *Multiplexer {
 	muxChan := make(chan Frame, 10)
 	return &Multiplexer{
-		Conn:        conn,
-		muxChan:     muxChan,
-		WorkerGroup: NewServerWorkerGroup(muxChan),
+		Conn:       conn,
+		MuxChan:    muxChan,
+		Forwarders: NewServerWorkerGroup(muxChan),
 	}
 }
 
@@ -133,7 +133,7 @@ func (mp *Multiplexer) Conn2Chan() {
 	buf := make([]byte, 0, bufferSize)
 	for {
 		byteSlice := make([]byte, bufferSize+32)
-		readLen, err := mp.Read(byteSlice)
+		readLen, err := mp.Conn.Read(byteSlice)
 		if err != nil {
 			pbConn2ChanLogger.Printf("read from Conn fail: %v", err)
 			break
@@ -146,9 +146,9 @@ func (mp *Multiplexer) Conn2Chan() {
 		for _, frame := range frames {
 			switch frame.Type {
 			case DATA:
-				mp.Forward(frame.Id, frame.Data)
+				mp.Forwarders.Forward(frame.Id, frame.Data)
 			case CLOSE:
-				mp.WorkerGroup.Close(frame.Id)
+				mp.Forwarders.Close(frame.Id)
 			}
 		}
 		buf = remain
@@ -158,11 +158,11 @@ func (mp *Multiplexer) Conn2Chan() {
 
 // Chan2Conn read data from shared channel, then write it to connection
 func (mp *Multiplexer) Chan2Conn() {
-	for frame := range mp.muxChan {
+	for frame := range mp.MuxChan {
 		newBytes := Assemble(&frame)
-		size, err := mp.Write(newBytes)
+		size, err := mp.Conn.Write(newBytes)
 		if frame.Data != nil {
-			size, err = mp.Write(frame.Data)
+			size, err = mp.Conn.Write(frame.Data)
 		}
 		if err != nil {
 			pbChan2ConnLogger.Printf("write to Conn fail %d: %v", size, err)
@@ -178,7 +178,7 @@ func (mp *Multiplexer) Destroy() {
 	mp.destroyLock.Do(func() {
 		pbConn2ChanLogger.Print("remote closed connection, clean up")
 		_ = mp.Conn.Close()
-		mp.WorkerGroup.Destroy()
+		mp.Forwarders.Destroy()
 	})
 }
 
@@ -201,7 +201,7 @@ func (s *Supervisor) Forward(id string, data []byte) {
 		//if s.ttlCache.Filter(id) { //only notify remote once to close connection
 		//	pbConn2ChanLogger.Printf("worker [%s] not exist", id)
 		//	go func() {
-		//		s.muxChan <- Frame{Id: id, Type: CLOSE}
+		//		s.MuxChan <- Frame{Id: id, Type: CLOSE}
 		//	}()
 		//}
 	}
