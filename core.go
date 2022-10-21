@@ -134,7 +134,7 @@ func (mp *Multiplexer) Conn2Chan() {
 			break
 		}
 		byteSlice = byteSlice[:readLen]
-		frames, remain := ParseAll(&SliceLink[byte]{
+		frames, remain := ParseAll(&LinkSlice[byte]{
 			Head: buf,
 			Tail: byteSlice,
 		})

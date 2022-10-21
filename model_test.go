@@ -111,7 +111,7 @@ func TestCircle_Next(t *testing.T) {
 }
 
 func TestBytesNode_Get(t *testing.T) {
-	bn := SliceLink{
+	bn := LinkSlice[byte]{
 		Head: []byte{1, 2, 3, 4},
 		Tail: []byte{5, 6, 7, 8},
 	}
@@ -135,7 +135,7 @@ func TestBytesNode_Get(t *testing.T) {
 
 func TestBytesNode_Bytes(t *testing.T) {
 	t.Run("full", func(t *testing.T) {
-		bn := SliceLink{
+		bn := LinkSlice[byte]{
 			Head: []byte{1, 2, 3, 4},
 			Tail: []byte{5, 6, 7, 8},
 		}
@@ -144,7 +144,7 @@ func TestBytesNode_Bytes(t *testing.T) {
 		}
 	})
 	t.Run("only head", func(t *testing.T) {
-		bn := SliceLink{
+		bn := LinkSlice[byte]{
 			Head: []byte{1, 2, 3, 4},
 		}
 		if !reflect.DeepEqual(bn.Data(), []byte{1, 2, 3, 4}) {
@@ -154,7 +154,7 @@ func TestBytesNode_Bytes(t *testing.T) {
 }
 
 func TestBytesNode_SubFromStart(t *testing.T) {
-	bn := SliceLink{
+	bn := LinkSlice[byte]{
 		Head: []byte{1, 2, 3, 4},
 		Tail: []byte{5, 6, 7, 8},
 	}
@@ -186,7 +186,7 @@ func TestBytesNode_SubFromStart(t *testing.T) {
 }
 
 func TestBytesNode_SubToEnd(t *testing.T) {
-	bn := SliceLink{
+	bn := LinkSlice[byte]{
 		Head: []byte{1, 2, 3, 4},
 		Tail: []byte{5, 6, 7, 8},
 	}
@@ -223,7 +223,7 @@ func TestBytesNode_SubToEnd(t *testing.T) {
 }
 
 func TestBytesNode_Sub(t *testing.T) {
-	bn := SliceLink{
+	bn := LinkSlice[byte]{
 		Head: []byte{1, 2, 3, 4},
 		Tail: []byte{5, 6, 7, 8},
 	}

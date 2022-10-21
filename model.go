@@ -6,61 +6,61 @@ import (
 	"time"
 )
 
-type SliceLink[T any] struct {
+type LinkSlice[T any] struct {
 	Head []T
 	Tail []T
 }
 
-func (sl *SliceLink[T]) Len() int {
+func (sl *LinkSlice[T]) Len() int {
 	return len(sl.Head) + len(sl.Tail)
 }
 
-func (sl *SliceLink[T]) SubFromStart(start int) *SliceLink[T] {
+func (sl *LinkSlice[T]) SubFromStart(start int) *LinkSlice[T] {
 	if start < len(sl.Head) {
-		return &SliceLink[T]{
+		return &LinkSlice[T]{
 			Head: sl.Head[start:],
 			Tail: sl.Tail,
 		}
 	} else {
-		return &SliceLink[T]{
+		return &LinkSlice[T]{
 			Head: sl.Tail[start-len(sl.Head):],
 		}
 	}
 }
 
-func (sl *SliceLink[T]) SubToEnd(end int) *SliceLink[T] {
+func (sl *LinkSlice[T]) SubToEnd(end int) *LinkSlice[T] {
 	if end < len(sl.Head) {
-		return &SliceLink[T]{
+		return &LinkSlice[T]{
 			Head: sl.Head[:end],
 		}
 	} else {
-		return &SliceLink[T]{
+		return &LinkSlice[T]{
 			Head: sl.Head,
 			Tail: sl.Tail[:end-len(sl.Head)],
 		}
 	}
 }
 
-func (sl *SliceLink[T]) Sub(start, end int) *SliceLink[T] {
+func (sl *LinkSlice[T]) Sub(start, end int) *LinkSlice[T] {
 	if start < len(sl.Head) {
 		if end < len(sl.Head) {
-			return &SliceLink[T]{
+			return &LinkSlice[T]{
 				Head: sl.Head[start:end],
 			}
 		} else {
-			return &SliceLink[T]{
+			return &LinkSlice[T]{
 				Head: sl.Head[start:],
 				Tail: sl.Tail[:end-len(sl.Head)],
 			}
 		}
 	} else {
-		return &SliceLink[T]{
+		return &LinkSlice[T]{
 			Head: sl.Tail[start-len(sl.Head) : end-len(sl.Head)],
 		}
 	}
 }
 
-func (sl *SliceLink[T]) Get(index int) T {
+func (sl *LinkSlice[T]) Get(index int) T {
 	if index < len(sl.Head) {
 		return sl.Head[index]
 	} else {
@@ -68,7 +68,7 @@ func (sl *SliceLink[T]) Get(index int) T {
 	}
 }
 
-func (sl *SliceLink[T]) Data() []T {
+func (sl *LinkSlice[T]) Data() []T {
 	if sl.Tail == nil {
 		return sl.Head
 	}

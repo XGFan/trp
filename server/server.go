@@ -53,7 +53,7 @@ func InitConn(conn net.Conn) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	all, _ := trp.ParseAll(&trp.SliceLink[byte]{Head: initCmd})
+	all, _ := trp.ParseAll(&trp.LinkSlice[byte]{Head: initCmd})
 	if len(all) == 1 && all[0].Type == trp.BIND {
 		port := all[0].ParsePort()
 		return port, nil
