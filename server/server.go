@@ -100,7 +100,7 @@ func (pm *PortMapping) CreateMultiplexer(conn net.Conn) {
 func (pm *PortMapping) UsingMultiplexer(conn net.Conn) {
 	mux := pm.chains.Next()
 	newId := atomic.AddInt32(&id, 1)
-	go mux.WorkerGroup.CreateWorker(fmt.Sprintf("%016d", newId), conn).Run()
+	mux.WorkerGroup.Create(fmt.Sprintf("%016d", newId), conn)
 }
 
 func (pm *PortMapping) Run() {
