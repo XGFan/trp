@@ -58,6 +58,6 @@ func connectServer() {
 }
 
 func InitConn(conn net.Conn, port int) error {
-	_, err := conn.Write(trp.Assemble(&trp.Frame{Id: " JUST HAVE FUN! ", Type: trp.BIND, Data: trp.IntTo2Bytes(port)}))
+	_, err := conn.Write(trp.AssembleHeader(&trp.Frame{Id: " JUST HAVE FUN! ", Type: trp.BIND, Data: trp.IntTo2Bytes(port)}))
 	return err
 }
