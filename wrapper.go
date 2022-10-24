@@ -18,7 +18,7 @@ func (f *Frame) ParsePort() int {
 	return ReadIntFrom2Bytes(f.Data)
 }
 
-func Assemble(frame *Frame) []byte {
+func AssembleHeader(frame *Frame) []byte {
 	switch frame.Type {
 	case DATA:
 		totalLen := 32 + len(frame.Data)
@@ -44,11 +44,11 @@ func Assemble(frame *Frame) []byte {
 
 func ParseAll(node *LinkSlice[byte]) ([]Frame, []byte) {
 	ret := make([]Frame, 0)
-	remain := Parse(node, &ret)
+	remain := parse(node, &ret)
 	return ret, remain.Data()
 }
 
-func Parse(buf *LinkSlice[byte], frames *[]Frame) *LinkSlice[byte] {
+func parse(buf *LinkSlice[byte], frames *[]Frame) *LinkSlice[byte] {
 	if buf.Len() < 32 {
 		return buf
 	}
@@ -64,20 +64,20 @@ func Parse(buf *LinkSlice[byte], frames *[]Frame) *LinkSlice[byte] {
 			Type: DATA,
 			Data: buf.Sub(32, totalLen).Data(),
 		})
-		return Parse(buf.SubFromStart(totalLen), frames)
+		return parse(buf.SubFromStart(totalLen), frames)
 	case 0x1:
 		*frames = append(*frames, Frame{
 			Id:   id,
 			Type: CLOSE,
 		})
-		return Parse(buf.SubFromStart(32), frames)
+		return parse(buf.SubFromStart(32), frames)
 	case 0x2:
 		*frames = append(*frames, Frame{
 			Id:   id,
 			Type: BIND,
 			Data: buf.Sub(17, 19).Data(),
 		})
-		return Parse(buf.SubFromStart(32), frames)
+		return parse(buf.SubFromStart(32), frames)
 	}
 	return nil
 }
