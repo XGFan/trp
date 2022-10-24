@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	flag.IntVar(&logLevel, "d", 1, "debug")
+	flag.IntVar(&LogLevel, "d", 1, "debug")
 }
 
 func WriteIntTo8Bytes(bytes []byte, v int) {
@@ -31,7 +31,7 @@ func ReadIntFrom2Bytes(bytes []byte) int {
 }
 
 func LogBytes(logger *log.Logger, bytes []byte) {
-	switch logLevel {
+	switch LogLevel {
 	case 1:
 		_ = logger.Output(2, fmt.Sprintf("Data size: %d", len(bytes)))
 	case 2:
