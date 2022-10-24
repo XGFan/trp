@@ -83,7 +83,7 @@ func NewPortMapping(port int) *PortMapping {
 		Port:   port,
 		chains: &trp.Circle[*trp.Multiplexer]{},
 	}
-	pm.Run()
+	go pm.Run()
 	return pm
 }
 
@@ -104,15 +104,13 @@ func (pm *PortMapping) UsingMultiplexer(conn net.Conn) {
 }
 
 func (pm *PortMapping) Run() {
-	go func() {
-		forwardListener, err := net.Listen("tcp", fmt.Sprintf(":%d", pm.Port))
-		serverLogger.Printf("listen %d", pm.Port)
-		if err != nil {
-			return
-		}
-		for {
-			conn, _ := forwardListener.Accept()
-			pm.UsingMultiplexer(conn)
-		}
-	}()
+	forwardListener, err := net.Listen("tcp", fmt.Sprintf(":%d", pm.Port))
+	serverLogger.Printf("listen %d", pm.Port)
+	if err != nil {
+		return
+	}
+	for {
+		conn, _ := forwardListener.Accept()
+		pm.UsingMultiplexer(conn)
+	}
 }
