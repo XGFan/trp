@@ -8,29 +8,33 @@ import (
 
 // WorkerGroup manage a group of worker
 type WorkerGroup struct {
-	inputChan <-chan Frame
-	muxChan   chan Frame //TODO just for new worker, should use a new way
-	workers   sync.Map
+	fromMux   <-chan Frame
+	toMux     chan []byte //TODO just for new worker, should use a new way
+	workers   map[string]*Forwarder
 	getWorker func(id string) *Forwarder
 }
 
 func (s *WorkerGroup) Run() {
-	for frame := range s.inputChan {
+	for frame := range s.fromMux {
 		id, fType, data := frame.Id, frame.Type, frame.Data
 		switch fType {
 		case CLOSE:
-			worker, ok := s.workers.Load(id)
-			s.workers.Delete(id)
+			worker, ok := s.workers[id]
+			delete(s.workers, id)
 			if ok {
-				close(worker.(*Forwarder).dedicatedReadChan) //close
+				close(worker.dedicatedChan) //close
 			}
 		case DATA:
 			worker := s.getWorker(id)
 			if worker == nil {
 				continue
 			}
-			LogBytes(PBConn2ChanLogger, data)
-			worker.dedicatedReadChan <- data
+			if worker.alive {
+				LogBytes(PBConn2ChanLogger, data)
+				worker.dedicatedChan <- data
+			} else {
+				delete(s.workers, id)
+			}
 		}
 	}
 	s.Destroy()
@@ -38,35 +42,36 @@ func (s *WorkerGroup) Run() {
 
 func (s *WorkerGroup) Create(id string, conn net.Conn) *Forwarder {
 	CommonLogger.Printf("[%s] worker created", id)
-	newChan := make(chan []byte, 0)
+	newChan := make(chan []byte, 10)
 	worker := &Forwarder{
-		Id:                id,
-		muxChan:           s.muxChan,
-		dedicatedReadChan: newChan,
-		conn:              conn,
-		destroyLock:       sync.Once{},
+		Id:            id,
+		muxChan:       s.toMux,
+		dedicatedChan: newChan,
+		conn:          conn,
+		destroyLock:   sync.Once{},
+		alive:         true,
 	}
-	s.workers.Store(worker.Id, worker)
+	s.workers[worker.Id] = worker
 	return worker
 }
 
 func (s *WorkerGroup) Destroy() {
-	s.workers.Range(func(key, worker any) bool {
-		close(worker.(*Forwarder).dedicatedReadChan) //propagate to forwarder
-		return true
-	})
+	for _, worker := range s.workers {
+		close(worker.dedicatedChan) //propagate to forwarder
+	}
 }
 
-func NewServerWorkerGroup(muxChan chan Frame, remote2Local chan Frame) *WorkerGroup {
+func NewServerWorkerGroup(muxChan chan []byte, remote2Local chan Frame) *WorkerGroup {
+	m := make(map[string]*Forwarder)
 	cwg := &WorkerGroup{
-		inputChan: remote2Local,
-		muxChan:   muxChan,
-		workers:   sync.Map{},
+		fromMux: remote2Local,
+		toMux:   muxChan,
+		workers: m,
 	}
 	cwg.getWorker = func(id string) *Forwarder {
-		worker, exist := cwg.workers.Load(id)
+		worker, exist := cwg.workers[id]
 		if exist {
-			return worker.(*Forwarder)
+			return worker
 		} else {
 			return nil
 		}
@@ -74,17 +79,18 @@ func NewServerWorkerGroup(muxChan chan Frame, remote2Local chan Frame) *WorkerGr
 	return cwg
 }
 
-func NewClientWorkerGroup(muxChan chan Frame, remote2Local chan Frame, connectFunc func() net.Conn) *WorkerGroup {
+func NewClientWorkerGroup(muxChan chan []byte, remote2Local chan Frame, connectFunc func() net.Conn) *WorkerGroup {
+	m := make(map[string]*Forwarder)
 	cwg := &WorkerGroup{
-		inputChan: remote2Local,
-		muxChan:   muxChan,
-		workers:   sync.Map{},
+		fromMux: remote2Local,
+		toMux:   muxChan,
+		workers: m,
 	}
 	ttlCache := NewTTLCache(time.Second * 10)
 	cwg.getWorker = func(id string) *Forwarder {
-		worker, exist := cwg.workers.Load(id)
+		worker, exist := cwg.workers[id]
 		if exist {
-			return worker.(*Forwarder)
+			return worker
 		}
 		if !ttlCache.Filter(id) {
 			return nil

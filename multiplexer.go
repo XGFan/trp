@@ -16,7 +16,7 @@ func (a *App) Run() {
 }
 
 func NewServer(conn net.Conn) *App {
-	local2Remote := make(chan Frame, 10)
+	local2Remote := make(chan []byte, 10)
 	remote2Local := make(chan Frame, 10)
 	multiplexer := NewMultiplexer(local2Remote, remote2Local, conn)
 	wg := NewServerWorkerGroup(local2Remote, remote2Local)
@@ -27,7 +27,7 @@ func NewServer(conn net.Conn) *App {
 }
 
 func NewClient(conn net.Conn, connectFunc func() net.Conn) *App {
-	local2Remote := make(chan Frame, 10)
+	local2Remote := make(chan []byte, 10)
 	remote2Local := make(chan Frame, 10)
 	multiplexer := NewMultiplexer(local2Remote, remote2Local, conn)
 	wg := NewClientWorkerGroup(local2Remote, remote2Local, connectFunc)
@@ -41,15 +41,15 @@ func NewClient(conn net.Conn, connectFunc func() net.Conn) *App {
 //
 // one connection, one shared channel, a group of workers, two goroutine
 //
-// functions: read conn, write to dedicated worker's channel. read inputChan, write to conn
+// functions: read conn, write to dedicated worker's channel. read fromMux, write to conn
 type Multiplexer struct {
 	conn        net.Conn
-	inputChan   <-chan Frame
+	inputChan   <-chan []byte
 	outputChan  chan<- Frame
 	destroyLock sync.Once
 }
 
-func NewMultiplexer(muxChan <-chan Frame, outputChan chan<- Frame, conn net.Conn) *Multiplexer {
+func NewMultiplexer(muxChan <-chan []byte, outputChan chan<- Frame, conn net.Conn) *Multiplexer {
 	return &Multiplexer{
 		conn:       conn,
 		inputChan:  muxChan,
@@ -86,21 +86,17 @@ func (mp *Multiplexer) Conn2Chan() {
 
 // Chan2Conn read data from shared channel, then write it to connection
 func (mp *Multiplexer) Chan2Conn() {
-	for frame := range mp.inputChan {
-		header := AssembleHeader(&frame)
-		size, err := mp.conn.Write(header)
-		if frame.Data != nil {
-			size, err = mp.conn.Write(frame.Data)
-		}
+	for data := range mp.inputChan {
+		size, err := mp.conn.Write(data)
 		if err != nil {
 			PBChan2ConnLogger.Printf("write to conn fail %d: %v", size, err)
 			return
 		} else {
-			LogBytes(PBChan2ConnLogger, frame.Data)
+			LogBytes(PBChan2ConnLogger, data)
 		}
 	}
-	//who has the power to close inputChan ?
-	mp.Destroy() //inputChan has been closed, just close all
+	//who has the power to close fromMux ?
+	mp.Destroy() //fromMux has been closed, just close all
 }
 
 func (mp *Multiplexer) Destroy() {
