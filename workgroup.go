@@ -24,7 +24,6 @@ func (s *CommonWorkerGroup) Create(id string, conn net.Conn) *Forwarder {
 		destroyLock:       sync.Once{},
 	}
 	s.workers.Store(worker.Id, worker)
-	worker.Run()
 	return worker
 }
 
@@ -88,7 +87,9 @@ func NewClientWorkerGroup(muxChan chan Frame, connectFunc func() net.Conn) Worke
 		}
 		conn := connectFunc()
 		if conn != nil {
-			return cwg.Create(id, conn)
+			newWorker := cwg.Create(id, conn)
+			go newWorker.Run()
+			return newWorker
 		}
 		return nil
 	}

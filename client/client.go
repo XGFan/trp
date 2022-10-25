@@ -48,12 +48,11 @@ func connectServer() {
 			continue
 		}
 		clientLogger.Printf("connected to server")
-		multiplexer := trp.NewClientMultiplexer(conn, func() net.Conn {
+		client := trp.NewClient(conn, func() net.Conn {
 			conn, _ := net.Dial("tcp", localAddr)
 			return conn
 		})
-		go multiplexer.Conn2Chan()
-		multiplexer.Chan2Conn()
+		client.Run()
 	}
 }
 

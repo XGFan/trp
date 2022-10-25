@@ -5,6 +5,31 @@ import (
 	"sync"
 )
 
+type App struct {
+	*Multiplexer
+	WorkerGroup
+}
+
+func NewServer(conn net.Conn) *App {
+	muxChan := make(chan Frame, 10)
+	wg := NewServerWorkerGroup(muxChan)
+	multiplexer := NewMultiplexer(muxChan, conn, wg)
+	return &App{
+		Multiplexer: multiplexer,
+		WorkerGroup: wg,
+	}
+}
+
+func NewClient(conn net.Conn, connectFunc func() net.Conn) *App {
+	muxChan := make(chan Frame, 10)
+	wg := NewClientWorkerGroup(muxChan, connectFunc)
+	multiplexer := NewMultiplexer(muxChan, conn, wg)
+	return &App{
+		Multiplexer: multiplexer,
+		WorkerGroup: wg,
+	}
+}
+
 // Multiplexer create bridge between C/S net.Conn and WorkerGroup
 //
 // one connection, one shared channel, a group of workers, two goroutine
@@ -12,27 +37,22 @@ import (
 // functions: read conn, write to dedicated worker's channel. read muxChan, write to conn
 type Multiplexer struct {
 	conn        net.Conn
-	Forwarders  WorkerGroup //TODO, could be private?
+	workers     WorkerGroup
 	muxChan     <-chan Frame
 	destroyLock sync.Once
 }
 
-func NewClientMultiplexer(conn net.Conn, f func() net.Conn) *Multiplexer {
-	muxChan := make(chan Frame, 10)
+func NewMultiplexer(muxChan chan Frame, conn net.Conn, wg WorkerGroup) *Multiplexer {
 	return &Multiplexer{
-		conn:       conn,
-		muxChan:    muxChan,
-		Forwarders: NewClientWorkerGroup(muxChan, f),
+		conn:    conn,
+		muxChan: muxChan,
+		workers: wg,
 	}
 }
 
-func NewServerMultiplexer(conn net.Conn) *Multiplexer {
-	muxChan := make(chan Frame, 10)
-	return &Multiplexer{
-		conn:       conn,
-		muxChan:    muxChan,
-		Forwarders: NewServerWorkerGroup(muxChan),
-	}
+func (mp *Multiplexer) Run() {
+	go mp.Conn2Chan()
+	mp.Chan2Conn()
 }
 
 // Conn2Chan read data from connection, then write it to dedicated channel
@@ -42,7 +62,7 @@ func (mp *Multiplexer) Conn2Chan() {
 		byteSlice := make([]byte, BufferSize+32)
 		readLen, err := mp.conn.Read(byteSlice)
 		if err != nil {
-			PBConn2ChanLogger.Printf("read from conn fail: %v", err)
+			PBConn2ChanLogger.Printf("read from conn fail: %v, close Multiplexer", err)
 			break
 		}
 		frames, remain := ParseAll(&LinkSlice[byte]{
@@ -52,14 +72,14 @@ func (mp *Multiplexer) Conn2Chan() {
 		for _, frame := range frames {
 			switch frame.Type {
 			case DATA:
-				mp.Forwarders.Forward(frame.Id, frame.Data)
+				mp.workers.Forward(frame.Id, frame.Data)
 			case CLOSE:
-				mp.Forwarders.Close(frame.Id)
+				mp.workers.Close(frame.Id)
 			}
 		}
 		buf = remain
 	}
-	mp.Destroy()
+	mp.Destroy(false) //when read error from connection, just close all
 }
 
 // Chan2Conn read data from shared channel, then write it to connection
@@ -77,13 +97,14 @@ func (mp *Multiplexer) Chan2Conn() {
 			LogBytes(PBChan2ConnLogger, frame.Data)
 		}
 	}
-	mp.Destroy()
+	//who has the power to close muxChan ?
+	mp.Destroy(false) //muxChan has been closed, just close all
 }
 
-func (mp *Multiplexer) Destroy() {
+func (mp *Multiplexer) Destroy(propagate bool) {
 	mp.destroyLock.Do(func() {
 		PBConn2ChanLogger.Print("remote closed connection, clean up")
 		_ = mp.conn.Close()
-		mp.Forwarders.Destroy() //propagate to forwarders
+		mp.workers.Destroy() //propagate to forwarders
 	})
 }

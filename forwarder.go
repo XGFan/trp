@@ -22,7 +22,7 @@ type Forwarder struct {
 
 func (w *Forwarder) Run() {
 	go w.Conn2Chan()
-	go w.Chan2Conn()
+	w.Chan2Conn()
 }
 
 // Destroy just destroy worker and resource

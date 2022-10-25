@@ -75,13 +75,13 @@ func (pmg *PortMappingGroup) Register(port int) *PortMapping {
 
 type PortMapping struct {
 	Port   int
-	chains *trp.Circle[*trp.Multiplexer]
+	chains *trp.Circle[*trp.App]
 }
 
 func NewPortMapping(port int) *PortMapping {
 	pm := &PortMapping{
 		Port:   port,
-		chains: &trp.Circle[*trp.Multiplexer]{},
+		chains: &trp.Circle[*trp.App]{},
 	}
 	go pm.Run()
 	return pm
@@ -89,18 +89,18 @@ func NewPortMapping(port int) *PortMapping {
 
 // CreateMultiplexer when client dial in, create a new multiplexer, add it to chains. when it is closed or stopped, remove it.
 func (pm *PortMapping) CreateMultiplexer(conn net.Conn) {
-	multiplexer := trp.NewServerMultiplexer(conn)
-	pm.chains.Add(multiplexer)
-	defer pm.chains.Remove(multiplexer)
-	go multiplexer.Chan2Conn()
-	multiplexer.Conn2Chan()
+	server := trp.NewServer(conn)
+	pm.chains.Add(server)
+	defer pm.chains.Remove(server)
+	go server.Run()
 }
 
 // UsingMultiplexer when local port dial in, find a multiplexer, pass to it.
 func (pm *PortMapping) UsingMultiplexer(conn net.Conn) {
-	mux := pm.chains.Next()
+	server := pm.chains.Next()
 	newId := atomic.AddInt32(&id, 1)
-	mux.Forwarders.Create(fmt.Sprintf("%016d", newId), conn)
+	worker := server.Create(fmt.Sprintf("%016d", newId), conn)
+	go worker.Run()
 }
 
 func (pm *PortMapping) Run() {
